@@ -136,7 +136,7 @@ async def get_latest_history_deals(count: int = 50):
 
     return deals_df.to_dict('records')
 
-    
+
 
 @app.get("/trade-details/{deal_ticket}")
 async def get_trade_details(deal_ticket: int):
@@ -144,8 +144,13 @@ async def get_trade_details(deal_ticket: int):
     if not connect_to_mt5():
         raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
     
+    # ✅ --- LA CORRECCIÓN ---
+    # Usamos una fecha de inicio razonable en lugar de timestamp 0
+    from_date = datetime(2020, 1, 1)
+    to_date = datetime.now()
+
     # Buscamos el deal en el historial reciente
-    deals = mt5.history_deals_get(datetime.now(), datetime.fromtimestamp(0), count=200) # Busca en los últimos 200 deals
+    deals = mt5.history_deals_get(from_date, to_date) # Obtenemos todo el historial reciente
     mt5.shutdown()
 
     if deals is None:
@@ -156,16 +161,14 @@ async def get_trade_details(deal_ticket: int):
     if target_deal is None:
         raise HTTPException(status_code=404, detail=f"Deal con ticket {deal_ticket} no encontrado en el historial reciente.")
 
-    # Convertimos el deal a diccionario y formateamos las fechas
     details = dict(target_deal._asdict())
     details['time'] = datetime.fromtimestamp(details['time'], tz=timezone.utc).isoformat()
     details['time_msc'] = datetime.fromtimestamp(details['time_msc'] / 1000, tz=timezone.utc).isoformat()
     
-    # Asignamos SL y TP si existen en el objeto, si no, None
     details['stop_loss'] = details.get('sl', 0.0)
     details['take_profit'] = details.get('tp', 0.0)
-
-    # Renombramos para consistencia con el bot
+    
+    # Renombramos para consistencia
     details['open_time'] = details['time']
     details['close_time'] = details['time']
     details['deal_ticket'] = details['ticket']
