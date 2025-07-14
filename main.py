@@ -82,6 +82,9 @@ async def get_open_positions():
 @app.get("/history")
 async def get_history_deals(start_date: str, end_date: str):
     """(Endpoint antiguo) Obtiene el historial de operaciones en un rango de fechas."""
+    # Log de depuración para este endpoint
+    logger.warning("<<<<< ¡ALERTA! Se está llamando al endpoint ANTIGUO /history por fechas.>>>>>")
+    
     if not connect_to_mt5():
         raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
     
@@ -101,13 +104,16 @@ async def get_history_deals(start_date: str, end_date: str):
     
     return deals_list
 
-# --- ✅ NUEVO ENDPOINT EFICIENTE ---
+
 @app.get("/history/latest")
 async def get_latest_history_deals(count: int = 50):
     """
     Obtiene solo los últimos 'count' deals del historial.
     Es mucho más eficiente que obtener todo el historial por fechas.
     """
+    # Log de depuración para este endpoint
+    logger.info(">>>>> Llamada recibida en el endpoint NUEVO Y EFICIENTE /history/latest. <<<<<")
+    
     if not connect_to_mt5():
         raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
 
@@ -122,7 +128,6 @@ async def get_latest_history_deals(count: int = 50):
     
     deals_df = pd.DataFrame(list(deals), columns=deals[0]._asdict().keys())
 
-    # ✅ --- LA CORRECCIÓN DEFINITIVA ---
     # Convertimos la columna a objetos datetime de pandas conscientes de UTC
     time_series = pd.to_datetime(deals_df['time'], unit='s').dt.tz_localize('utc')
     time_msc_series = pd.to_datetime(deals_df['time_msc'], unit='ms').dt.tz_localize('utc')
