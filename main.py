@@ -81,25 +81,27 @@ async def get_open_positions():
 
 
 
+# En mt5-wrapper/main.py
+
 @app.get("/history/latest")
 async def get_latest_history_deals(count: int = 50):
     """
-    Obtiene solo los últimos 'count' deals del historial, usando timestamps
-    para forzar el uso del parámetro 'count' y evitar el filtro de fecha.
+    Obtiene solo los últimos 'count' deals del historial, usando un rango
+    de fechas amplio pero seguro para ser compatible con Windows.
     """
-    logger.info(f"<<<<< LLAMADA A /history/latest con count={count} >>>>>")
+    logger.info(f"<<<<< LLAMADA A /history/latest (v3) con count={count} >>>>>")
     
     if not connect_to_mt5():
         raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
 
-    # --- LA CORRECCIÓN DEFINITIVA ---
-    # Usamos timestamps para definir un rango de fechas enorme que MT5 pueda manejar.
-    # El timestamp 0 para 'from_date' y un futuro lejano para 'to_date'.
-    # Esto fuerza a la API de MT5 a respetar el parámetro 'count'.
-    from_ts = 0 
-    to_ts = int(datetime(2099, 1, 1).timestamp())
+    # ✅ --- LA CORRECCIÓN FINAL ---
+    # Usamos un rango de fechas con objetos datetime, que son seguros en Windows.
+    # El 'from_date' es suficientemente antiguo, y el 'to_date' es ahora.
+    # Esto evita el OverflowError y el OSError.
+    from_date = datetime(2020, 1, 1) 
+    to_date = datetime.now()
 
-    deals = mt5.history_deals_get(from_ts, to_ts, count=count)
+    deals = mt5.history_deals_get(from_date, to_date, count=count)
     mt5.shutdown()
 
     if deals is None or len(deals) == 0:
@@ -110,7 +112,7 @@ async def get_latest_history_deals(count: int = 50):
     
     deals_df = pd.DataFrame(list(deals), columns=deals[0]._asdict().keys())
 
-    # Conversión robusta a datetime y luego a string ISO
+    # La conversión de datos se mantiene, ya que es correcta.
     time_series = pd.to_datetime(deals_df['time'], unit='s').dt.tz_localize('utc')
     time_msc_series = pd.to_datetime(deals_df['time_msc'], unit='ms').dt.tz_localize('utc')
     deals_df['time'] = time_series.apply(lambda x: x.isoformat())
