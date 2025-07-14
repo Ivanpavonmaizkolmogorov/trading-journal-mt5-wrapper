@@ -79,30 +79,6 @@ async def get_open_positions():
     return positions_list
 
 
-@app.get("/history")
-async def get_history_deals(start_date: str, end_date: str):
-    """(Endpoint antiguo) Obtiene el historial de operaciones en un rango de fechas."""
-    # Log de depuración para este endpoint
-    logger.warning("<<<<< ¡ALERTA! Se está llamando al endpoint ANTIGUO /history por fechas.>>>>>")
-    
-    if not connect_to_mt5():
-        raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
-    
-    from_date = datetime.strptime(start_date, "%Y-%m-%d")
-    to_date = datetime.strptime(end_date, "%Y-%m-%d")
-
-    deals = mt5.history_deals_get(from_date, to_date)
-    mt5.shutdown()
-
-    if deals is None:
-        return []
-
-    deals_list = [dict(d._asdict()) for d in deals]
-    for d in deals_list:
-        d['time'] = datetime.fromtimestamp(d['time'], tz=timezone.utc).isoformat()
-        d['time_msc'] = datetime.fromtimestamp(d['time_msc'] / 1000, tz=timezone.utc).isoformat()
-    
-    return deals_list
 
 
 @app.get("/history/latest")
