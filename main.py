@@ -1,19 +1,20 @@
-# mt5-wrapper/main.py
+# mt5-wrapper/main.py (Versión Final y Eficiente)
 
 import os
 import logging
-from datetime import datetime
-from typing import List
+from datetime import datetime, timezone
+from typing import List, Optional
 
 # --- Framework de API ---
 from fastapi import FastAPI, HTTPException
 import uvicorn
+import pandas as pd # Necesario para la conversión de datos
 
 # --- Librerías de Trading y Configuración ---
 import MetaTrader5 as mt5
 from dotenv import load_dotenv
 
-# --- Cargar variables de entorno (como la ruta a los robots) ---
+# --- Cargar variables de entorno ---
 load_dotenv()
 
 # --- Configuración del Logging ---
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="MT5-Wrapper API",
     description="API para interactuar con MetaTrader 5 y exponer datos de trading.",
-    version="1.1.0"
+    version="1.3.0" # Version incrementada para reflejar los cambios
 )
 
 
@@ -63,25 +64,24 @@ async def get_open_positions():
         raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
     
     positions = mt5.positions_get()
-    mt5.shutdown() # Siempre cerrar la conexión después de usar
+    mt5.shutdown()
     
     if positions is None:
         return []
 
-    # Convierte los datos a un formato JSON serializable
     positions_list = [dict(p._asdict()) for p in positions]
     for p in positions_list:
-        p['time'] = datetime.fromtimestamp(p['time']).isoformat()
-        p['time_msc'] = datetime.fromtimestamp(p['time_msc'] / 1000).isoformat()
-        p['time_update'] = datetime.fromtimestamp(p['time_update']).isoformat()
-        p['time_update_msc'] = datetime.fromtimestamp(p['time_update_msc'] / 1000).isoformat()
+        p['time'] = datetime.fromtimestamp(p['time'], tz=timezone.utc).isoformat()
+        p['time_msc'] = datetime.fromtimestamp(p['time_msc'] / 1000, tz=timezone.utc).isoformat()
+        p['time_update'] = datetime.fromtimestamp(p['time_update'], tz=timezone.utc).isoformat()
+        p['time_update_msc'] = datetime.fromtimestamp(p['time_update_msc'] / 1000, tz=timezone.utc).isoformat()
     
     return positions_list
 
 
 @app.get("/history")
 async def get_history_deals(start_date: str, end_date: str):
-    """Obtiene el historial de operaciones en un rango de fechas."""
+    """(Endpoint antiguo) Obtiene el historial de operaciones en un rango de fechas."""
     if not connect_to_mt5():
         raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
     
@@ -96,82 +96,97 @@ async def get_history_deals(start_date: str, end_date: str):
 
     deals_list = [dict(d._asdict()) for d in deals]
     for d in deals_list:
-        d['time'] = datetime.fromtimestamp(d['time']).isoformat()
-        d['time_msc'] = datetime.fromtimestamp(d['time_msc'] / 1000).isoformat()
+        d['time'] = datetime.fromtimestamp(d['time'], tz=timezone.utc).isoformat()
+        d['time_msc'] = datetime.fromtimestamp(d['time_msc'] / 1000, tz=timezone.utc).isoformat()
     
     return deals_list
 
-# Puedes ampliar este endpoint si necesitas más detalles
+# --- ✅ NUEVO ENDPOINT EFICIENTE ---
+@app.get("/history/latest")
+async def get_latest_history_deals(count: int = 50):
+    """
+    Obtiene solo los últimos 'count' deals del historial.
+    Es mucho más eficiente que obtener todo el historial por fechas.
+    """
+    if not connect_to_mt5():
+        raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
+
+    deals = mt5.history_deals_get(datetime.now(), datetime.fromtimestamp(0), count=count)
+    mt5.shutdown()
+
+    if deals is None or len(deals) == 0:
+        return []
+    
+    deals_df = pd.DataFrame(list(deals), columns=deals[0]._asdict().keys())
+    deals_df['time'] = pd.to_datetime(deals_df['time'], unit='s').dt.tz_localize('utc').isoformat()
+    deals_df['time_msc'] = pd.to_datetime(deals_df['time_msc'], unit='ms').dt.tz_localize('utc').dt.isoformat()
+    deals_df = deals_df.where(pd.notna(deals_df), None)
+
+    return deals_df.to_dict('records')
+
+
 @app.get("/trade-details/{deal_ticket}")
 async def get_trade_details(deal_ticket: int):
     """Obtiene detalles de un trade específico por su ticket."""
-    # Esta es una implementación de ejemplo. Deberás completarla
-    # con la lógica exacta que usabas para obtener todos los detalles.
-    logger.info(f"Buscando detalles para el ticket: {deal_ticket}")
-    # Aquí iría tu lógica para buscar el trade, su apertura, SL, TP, etc.
-    # Por ahora, devolvemos un mock.
-    mock_detail = {
-        "deal_ticket": deal_ticket,
-        "symbol": "EURUSD-", 
-        "profit": 123.45,
-        "order_type": "BUY",
-        "close_reason": "Take Profit",
-        "volume": 0.1,
-        "position_id": 12345,
-        "open_price": 1.07500,
-        "stop_loss": 1.07000,
-        "take_profit": 1.08500,
-        "close_price": 1.08500,
-        "commission": -1.50,
-        "open_time": datetime.now().isoformat(),
-        "close_time": datetime.now().isoformat()
-    }
-    return mock_detail
+    if not connect_to_mt5():
+        raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
+    
+    # Buscamos el deal en el historial reciente
+    deals = mt5.history_deals_get(datetime.now(), datetime.fromtimestamp(0), count=200) # Busca en los últimos 200 deals
+    mt5.shutdown()
+
+    if deals is None:
+        raise HTTPException(status_code=404, detail=f"No se encontró historial de trades.")
+
+    target_deal = next((d for d in deals if d.ticket == deal_ticket), None)
+    
+    if target_deal is None:
+        raise HTTPException(status_code=404, detail=f"Deal con ticket {deal_ticket} no encontrado en el historial reciente.")
+
+    # Convertimos el deal a diccionario y formateamos las fechas
+    details = dict(target_deal._asdict())
+    details['time'] = datetime.fromtimestamp(details['time'], tz=timezone.utc).isoformat()
+    details['time_msc'] = datetime.fromtimestamp(details['time_msc'] / 1000, tz=timezone.utc).isoformat()
+    
+    # Asignamos SL y TP si existen en el objeto, si no, None
+    details['stop_loss'] = details.get('sl', 0.0)
+    details['take_profit'] = details.get('tp', 0.0)
+
+    # Renombramos para consistencia con el bot
+    details['open_time'] = details['time']
+    details['close_time'] = details['time']
+    details['deal_ticket'] = details['ticket']
+    details['magic'] = details['magic']
+    
+    return details
 
 
-# ===================================================================
-# ===                ✅ NUEVO ENDPOINT PARA ROBOTS ✅              ===
-# ===================================================================
 @app.get("/robots", response_model=dict[str, List[str]])
 async def list_available_robots():
     """
     Escanea el directorio de Expert Advisors y devuelve una lista de los
-    archivos .ex5 encontrados, que representan a los robots disponibles.
+    archivos .ex5 encontrados.
     """
-    # Carga la ruta desde el archivo .env
     experts_path = os.getenv("MT5_EXPERTS_PATH")
 
     if not experts_path or not os.path.isdir(experts_path):
         logger.error(f"La ruta de los Experts no está configurada o no es válida: {experts_path}")
-        raise HTTPException(
-            status_code=500,
-            detail="La ruta a la carpeta de Expert Advisors no está configurada correctamente en el servidor del wrapper."
-        )
+        raise HTTPException(status_code=500, detail="La ruta a la carpeta de Expert Advisors no está configurada en el servidor.")
 
     try:
         logger.info(f"Escaneando robots en la ruta: {experts_path}")
-        
-        # Encuentra todos los archivos que terminan en .ex5 y no son subdirectorios
         robot_files = [
             f for f in os.listdir(experts_path)
             if os.path.isfile(os.path.join(experts_path, f)) and f.lower().endswith('.ex5')
         ]
-        
-        # Limpia la extensión .ex5 para devolver solo los nombres
         robot_names = [os.path.splitext(name)[0] for name in robot_files]
-        
         logger.info(f"Encontrados {len(robot_names)} robots: {robot_names}")
         return {"robots": robot_names}
-
     except Exception as e:
         logger.error(f"Ocurrió un error inesperado al escanear la carpeta de robots: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail="Ocurrió un error interno en el servidor al intentar listar los robots."
-        )
+        raise HTTPException(status_code=500, detail="Ocurrió un error interno en el servidor al intentar listar los robots.")
 
-# --- Ejecutar la API ---
+
 if __name__ == "__main__":
     logger.info("Iniciando MT5 Wrapper API...")
-    # Escucha en todas las interfaces de red (0.0.0.0) para ser accesible desde fuera del VPS
     uvicorn.run(app, host="0.0.0.0", port=8000)
