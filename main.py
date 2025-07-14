@@ -122,6 +122,29 @@ async def get_latest_history_deals(count: int = 50):
 
     return deals_df.to_dict('records')
 
+@app.get("/latest-deals/{count}")
+async def get_latest_deals(count: int = 200):
+    """
+    Obtiene los 'count' deals más recientes del historial.
+    """
+    if not mt5.initialize():
+        # ... (tu manejo de error)
+        return {"error": "Failed to initialize MT5"}
+
+    # Pedimos los N deals más recientes desde "ahora" hacia atrás
+    deals = mt5.history_deals_get(datetime.now(), datetime(2000, 1, 1), count=count)
+
+    if deals is None:
+        return []
+        
+    deals_list = [deal._asdict() for deal in deals]
+    for deal in deals_list:
+        # Es buena práctica mantener la conversión a UTC
+        deal['time'] = datetime.fromtimestamp(deal['time'], tz=timezone.utc).isoformat()
+        deal['time_msc'] = datetime.fromtimestamp(deal['time_msc'] / 1000, tz=timezone.utc).isoformat()
+            
+    return deals_list
+
 
 
 @app.get("/trade-details/{deal_ticket}")
