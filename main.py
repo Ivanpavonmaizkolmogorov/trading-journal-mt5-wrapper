@@ -103,6 +103,10 @@ async def get_history_deals(start_date: str, end_date: str):
 
 # --- ✅ NUEVO ENDPOINT EFICIENTE ---
 @app.get("/history/latest")
+# En main.py
+
+# --- ✅ NUEVO ENDPOINT EFICIENTE (VERSIÓN CORREGIDA) ---
+@app.get("/history/latest")
 async def get_latest_history_deals(count: int = 50):
     """
     Obtiene solo los últimos 'count' deals del historial.
@@ -111,18 +115,26 @@ async def get_latest_history_deals(count: int = 50):
     if not connect_to_mt5():
         raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
 
-    deals = mt5.history_deals_get(datetime.now(), datetime.fromtimestamp(0), count=count)
+    # ✅ --- LA CORRECCIÓN ---
+    # Usamos una fecha de inicio razonable en lugar de timestamp 0.
+    from_date = datetime(2020, 1, 1) # 1 de Enero de 2020
+    to_date = datetime.now()
+    
+    # Pedimos el historial desde la fecha de inicio hasta ahora, limitando el resultado
+    deals = mt5.history_deals_get(from_date, to_date, count=count)
     mt5.shutdown()
 
     if deals is None or len(deals) == 0:
         return []
     
+    # El resto del código de conversión es el mismo y está bien.
     deals_df = pd.DataFrame(list(deals), columns=deals[0]._asdict().keys())
     deals_df['time'] = pd.to_datetime(deals_df['time'], unit='s').dt.tz_localize('utc').isoformat()
-    deals_df['time_msc'] = pd.to_datetime(deals_df['time_msc'], unit='ms').dt.tz_localize('utc').dt.isoformat()
+    deals_df['time_msc'] = pd.to_datetime(deals_df['time_msc'], unit='ms').dt.tz_localize('utc').isoformat()
     deals_df = deals_df.where(pd.notna(deals_df), None)
 
     return deals_df.to_dict('records')
+# --- FIN DEL ENDPOINT CORREGIDO ---
 
 
 @app.get("/trade-details/{deal_ticket}")
