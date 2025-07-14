@@ -102,8 +102,6 @@ async def get_history_deals(start_date: str, end_date: str):
     return deals_list
 
 # --- ✅ NUEVO ENDPOINT EFICIENTE ---
-# En main.py (VPS)
-
 @app.get("/history/latest")
 async def get_latest_history_deals(count: int = 50):
     """
@@ -124,16 +122,21 @@ async def get_latest_history_deals(count: int = 50):
     
     deals_df = pd.DataFrame(list(deals), columns=deals[0]._asdict().keys())
 
-    # ✅ --- LA CORRECCIÓN ---
-    # Usamos .dt.isoformat() para aplicar la función a cada fecha de la columna
-    deals_df['time'] = pd.to_datetime(deals_df['time'], unit='s').dt.tz_localize('utc').dt.isoformat()
-    deals_df['time_msc'] = pd.to_datetime(deals_df['time_msc'], unit='ms').dt.tz_localize('utc').dt.isoformat()
+    # ✅ --- LA CORRECCIÓN DEFINITIVA ---
+    # Convertimos la columna a objetos datetime de pandas conscientes de UTC
+    time_series = pd.to_datetime(deals_df['time'], unit='s').dt.tz_localize('utc')
+    time_msc_series = pd.to_datetime(deals_df['time_msc'], unit='ms').dt.tz_localize('utc')
     
+    # Aplicamos la función .isoformat() a CADA elemento de la serie
+    deals_df['time'] = time_series.apply(lambda x: x.isoformat())
+    deals_df['time_msc'] = time_msc_series.apply(lambda x: x.isoformat())
+    
+    # Reemplazamos los valores NaN (Not a Number) con None para un JSON válido
     deals_df = deals_df.where(pd.notna(deals_df), None)
 
     return deals_df.to_dict('records')
 
-
+    
 
 @app.get("/trade-details/{deal_ticket}")
 async def get_trade_details(deal_ticket: int):
