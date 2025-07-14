@@ -1,0 +1,21 @@
+# .gitignore para el mt5-wrapper v2
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+.env
+
+# Archivos compilados de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs y Bases de Datos locales
+*.log
+*.db
+*.sqlite3
+
+# Comentario de prueba para verificar el pull
+# Prueba de subida desde Mac - 14/07/2025
