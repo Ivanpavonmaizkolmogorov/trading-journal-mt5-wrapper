@@ -84,35 +84,38 @@ async def get_open_positions():
 @app.get("/history/latest")
 async def get_latest_history_deals(count: int = 50):
     """
-    Obtiene solo los últimos 'count' deals del historial.
-    Es mucho más eficiente que obtener todo el historial por fechas.
+    Obtiene solo los últimos 'count' deals del historial, usando timestamps
+    para forzar el uso del parámetro 'count' y evitar el filtro de fecha.
     """
-    # Log de depuración para este endpoint
-    logger.info(">>>>> Llamada recibida en el endpoint NUEVO Y EFICIENTE /history/latest. <<<<<")
+    logger.info(f"<<<<< LLAMADA A /history/latest con count={count} >>>>>")
     
     if not connect_to_mt5():
         raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
 
-    from_date = datetime(2020, 1, 1)
-    to_date = datetime.now()
-    
-    deals = mt5.history_deals_get(from_date, to_date, count=count)
+    # --- LA CORRECCIÓN DEFINITIVA ---
+    # Usamos timestamps para definir un rango de fechas enorme que MT5 pueda manejar.
+    # El timestamp 0 para 'from_date' y un futuro lejano para 'to_date'.
+    # Esto fuerza a la API de MT5 a respetar el parámetro 'count'.
+    from_ts = 0 
+    to_ts = int(datetime(2099, 1, 1).timestamp())
+
+    deals = mt5.history_deals_get(from_ts, to_ts, count=count)
     mt5.shutdown()
 
     if deals is None or len(deals) == 0:
+        logger.info("No se encontraron deals recientes en /history/latest.")
         return []
+    
+    logger.info(f"MT5 devolvió {len(deals)} deals.")
     
     deals_df = pd.DataFrame(list(deals), columns=deals[0]._asdict().keys())
 
-    # Convertimos la columna a objetos datetime de pandas conscientes de UTC
+    # Conversión robusta a datetime y luego a string ISO
     time_series = pd.to_datetime(deals_df['time'], unit='s').dt.tz_localize('utc')
     time_msc_series = pd.to_datetime(deals_df['time_msc'], unit='ms').dt.tz_localize('utc')
-    
-    # Aplicamos la función .isoformat() a CADA elemento de la serie
     deals_df['time'] = time_series.apply(lambda x: x.isoformat())
     deals_df['time_msc'] = time_msc_series.apply(lambda x: x.isoformat())
     
-    # Reemplazamos los valores NaN (Not a Number) con None para un JSON válido
     deals_df = deals_df.where(pd.notna(deals_df), None)
 
     return deals_df.to_dict('records')
