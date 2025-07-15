@@ -33,7 +33,7 @@ def get_mt5_connection():
     Dependencia de FastAPI: se conecta a MT5, cede el control al endpoint,
     y se asegura de desconectar al final, en cada petición.
     """
-    mt5_path = os.getenv("MT5_EXE_PATH")
+    mt5_path = os.getenv("MT5_TERMINAL_PATH")
     if not mt5.initialize(path=mt5_path):
         logger.error(f"Fallo al inicializar MT5: {mt5.last_error()}")
         raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
