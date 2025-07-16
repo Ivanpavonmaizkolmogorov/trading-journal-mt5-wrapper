@@ -34,6 +34,8 @@ def get_mt5_connection():
     y se asegura de desconectar al final, en cada petición.
     """
     mt5_path = os.getenv("MT5_TERMINAL_PATH")
+    # --- AÑADE ESTA LÍNEA ---
+    logger.info(f"RUTA LEÍDA DEL .ENV: {mt5_path}")
     if not mt5.initialize(path=mt5_path):
         logger.error(f"Fallo al inicializar MT5: {mt5.last_error()}")
         raise HTTPException(status_code=503, detail="No se pudo conectar a MetaTrader 5")
@@ -81,24 +83,45 @@ async def get_open_positions(mt5_conn: mt5 = Depends(get_mt5_connection)):
 
 @app.get("/latest-deals/{count}", response_model=List[dict])
 async def get_latest_deals(count: int = 200, mt5_conn: mt5 = Depends(get_mt5_connection)):
-    """Obtiene los 'count' deals más recientes del historial."""
-    to_date = datetime.now(timezone.utc)
-    from_date = to_date - timedelta(days=90)
-    
-    all_deals = mt5_conn.history_deals_get(from_date, to_date)
-    
-    if all_deals is None or len(all_deals) == 0:
+    """
+    Obtiene los 'count' deals más recientes del historial, usando la hora del
+    servidor de MT5 como referencia para máxima fiabilidad.
+    """
+    try:
+        # 1. Obtenemos la hora fiable del servidor de MT5
+        rates = mt5_conn.copy_rates_from_pos("EURUSD", mt5.TIMEFRAME_M1, 0, 1)
+        if rates is None or len(rates) == 0:
+            # Si falla la obtención de la vela, usamos la hora del sistema como respaldo
+            logger.warning("No se pudo obtener la hora de la vela de EURUSD. Usando la hora del sistema.")
+            to_date = datetime.now(timezone.utc)
+        else:
+            # Usamos la hora de la última vela como la referencia más precisa
+            server_timestamp = rates[0]['time']
+            to_date = datetime.fromtimestamp(server_timestamp, tz=timezone.utc) + timedelta(minutes=1)
+            logger.info(f"Usando hora de servidor MT5 (vela EURUSD) como referencia: {to_date.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # 2. Buscamos en un rango de tiempo amplio para asegurar que no se pierde nada
+        from_date = to_date - timedelta(days=90)
+        all_deals = mt5_conn.history_deals_get(from_date, to_date)
+        
+        if all_deals is None or len(all_deals) == 0:
+            return []
+
+        # El resto de la función se mantiene igual: ordena por tiempo y formatea
+        sorted_deals = sorted(all_deals, key=lambda d: d.time, reverse=True)
+        latest_n_deals = sorted_deals[:count]
+        
+        deals_list = [deal._asdict() for deal in latest_n_deals]
+        for deal in deals_list:
+            deal['time'] = datetime.fromtimestamp(deal['time'], tz=timezone.utc).isoformat()
+            deal['time_msc'] = datetime.fromtimestamp(deal['time_msc'] / 1000, tz=timezone.utc).isoformat()
+                
+        return deals_list
+
+    except Exception as e:
+        logger.error(f"Error crítico en la función get_latest_deals: {e}", exc_info=True)
+        # En caso de cualquier error inesperado, devolvemos una lista vacía para no romper el bot.
         return []
-    
-    sorted_deals = sorted(all_deals, key=lambda d: d.time, reverse=True)
-    latest_n_deals = sorted_deals[:count]
-    
-    deals_list = [deal._asdict() for deal in latest_n_deals]
-    for deal in deals_list:
-        deal['time'] = datetime.fromtimestamp(deal['time'], tz=timezone.utc).isoformat()
-        deal['time_msc'] = datetime.fromtimestamp(deal['time_msc'] / 1000, tz=timezone.utc).isoformat()
-            
-    return deals_list
 
 
 @app.get("/trade-details/{deal_ticket}", response_model=dict)
@@ -144,4 +167,4 @@ async def list_available_robots():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     logger.info(f"Iniciando MT5 Wrapper API en http://0.0.0.0:{port}")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
