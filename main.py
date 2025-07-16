@@ -168,3 +168,59 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     logger.info(f"Iniciando MT5 Wrapper API en http://0.0.0.0:{port}")
     uvicorn.run("main:app", host="0.0.0.0", port=port)
+
+# =====================================================================
+#  ✅ NUEVO ENDPOINT PARA ENRIQUECER DATOS DE CIERRE
+#  AÑADE ESTA FUNCIÓN COMPLETA EN TU main.py DEL VPS
+# =====================================================================
+@app.get("/enriched-trade-details/{deal_ticket}", response_model=Dict)
+async def get_enriched_trade_details(deal_ticket: int, mt5_conn: mt5 = Depends(get_mt5_connection)):
+    """
+    Obtiene los detalles completos y enriquecidos de un trade cerrado,
+    buscando el deal de apertura y la orden original.
+    """
+    try:
+        # 1. Obtener el deal de cierre por su ticket
+        deal_info = mt5_conn.history_deals_get(ticket=deal_ticket)
+        if not deal_info or len(deal_info) == 0:
+            raise HTTPException(status_code=404, detail=f"Deal con ticket {deal_ticket} no encontrado.")
+        
+        closing_deal = deal_info[0]
+        position_id = closing_deal.position_id
+
+        # 2. Obtener todos los deals de la misma posición para encontrar la apertura
+        position_deals = mt5_conn.history_deals_get(position=position_id)
+        if not position_deals:
+            raise HTTPException(status_code=404, detail=f"No se encontraron deals para la posición {position_id}.")
+
+        opening_deal = next((d for d in position_deals if d.entry == 0), None) # entry=0 es una apertura
+        
+        # 3. Obtener la orden original para sacar SL y TP
+        opening_order_ticket = opening_deal.order if opening_deal else closing_deal.order
+        order_info = mt5_conn.history_orders_get(ticket=opening_order_ticket)
+        opening_order = order_info[0] if order_info else None
+
+        # 4. Construir el diccionario enriquecido
+        enriched_data = {
+            "deal_ticket": closing_deal.ticket,
+            "position_id": position_id,
+            "symbol": closing_deal.symbol,
+            "volume": closing_deal.volume,
+            "magic_number": closing_deal.magic,
+            "profit": closing_deal.profit,
+            "commission": closing_deal.commission,
+            "swap": closing_deal.swap,
+            "close_price": closing_deal.price,
+            "close_time_utc": datetime.fromtimestamp(closing_deal.time, tz=timezone.utc).isoformat(),
+            "close_reason": closing_deal.reason,
+            "order_type": opening_deal.type if opening_deal else closing_deal.type,
+            "open_price": opening_deal.price if opening_deal else None,
+            "open_time_utc": datetime.fromtimestamp(opening_deal.time, tz=timezone.utc).isoformat() if opening_deal else None,
+            "stop_loss": opening_order.sl if opening_order else 0.0,
+            "take_profit": opening_order.tp if opening_order else 0.0,
+        }
+        return enriched_data
+
+    except Exception as e:
+        logger.error(f"Error enriqueciendo el deal {deal_ticket}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error interno al procesar los detalles del trade.")
