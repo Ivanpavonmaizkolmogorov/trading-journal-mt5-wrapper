@@ -2,6 +2,7 @@ print("--- ✅ ESTOY EJECUTANDO LA VERSIÓN MÁS NUEVA DEL CÓDIGO (v_vela_enriq
 
 # ...el resto de tus imports (import os, import logging, etc.) deben ir debajo de esta línea
 # mt5-wrapper/main.py (Versión 4.0 - Robusta con Dependencias)
+import re
 
 import os
 import logging
@@ -152,20 +153,43 @@ async def get_trade_details(deal_ticket: int, mt5_conn: mt5 = Depends(get_mt5_co
     return details
 
 
-@app.get("/robots", response_model=dict)
+@app.get("/robots", response_model=Dict[str, List[Dict[str, str | int]]])
 async def list_available_robots():
-    """Escanea y devuelve una lista de los archivos .ex5 de Expert Advisors."""
+    """
+    [VERSIÓN DE DEPURACIÓN]
+    Escanea, devuelve una lista de EAs (.ex5) y extrae su MagicNumber.
+    """
+    logger.info("--- INICIANDO BÚSQUEDA DE ROBOTS (VERSIÓN DEBUG) ---")
     experts_path = os.getenv("MT5_EXPERTS_PATH")
+    logger.info(f"Ruta de Experts a escanear: {experts_path}")
+    
     if not experts_path or not os.path.isdir(experts_path):
+        logger.error("La ruta de Experts no es válida o no está configurada.")
         raise HTTPException(status_code=500, detail="Ruta de Expert Advisors no configurada.")
 
+    registered_robots = []
     try:
         robot_files = [f for f in os.listdir(experts_path) if f.lower().endswith('.ex5')]
-        robot_names = [os.path.splitext(name)[0] for name in robot_files]
-        return {"robots": robot_names}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al escanear la carpeta de robots: {e}")
+        logger.info(f"Archivos .ex5 encontrados: {robot_files}")
+        
+        for ex5_file in robot_files:
+            robot_name = os.path.splitext(ex5_file)[0]
+            mq5_path = os.path.join(experts_path, robot_name + ".mq5")
+            logger.info(f"Procesando '{robot_name}': buscando .mq5 en '{mq5_path}'")
+            
+            magic_number = extract_magic_number_from_mq5(mq5_path)
+            logger.info(f"Resultado de la extracción para '{robot_name}': {magic_number}")
+            
+            if magic_number is not None:
+                registered_robots.append({"name": robot_name, "magic_number": magic_number})
 
+        logger.info(f"Robots válidos que se devolverán: {registered_robots}")
+        return {"robots": registered_robots}
+
+    except Exception as e:
+        logger.error(f"Error crítico durante el escaneo: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error al escanear la carpeta de robots: {e}")
+        
 # =====================================================================
 #  ✅ NUEVO ENDPOINT PARA ENRIQUECER DATOS DE APERTURA (VERSIÓN FINAL Y ROBUSTA)
 # =====================================================================
@@ -266,6 +290,35 @@ async def get_enriched_trade_details(deal_ticket: int, mt5_conn: mt5 = Depends(g
     except Exception as e:
         logger.error(f"Error enriqueciendo el deal {deal_ticket}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error interno al procesar los detalles del trade.")
+
+def extract_magic_number_from_mq5(file_path: str) -> int | None:
+    """
+    [VERSIÓN 2.1 FINAL]
+    Abre un archivo .mq5 y extrae el 'MagicNumber' probando las codificaciones 
+    en el orden de prioridad correcto.
+    """
+    content = None
+    # Cambiamos el orden: Probamos utf-16 PRIMERO, que es el que indican los logs.
+    for encoding in ['utf-16', 'utf-8-sig', 'cp1252']: 
+        try:
+            with open(file_path, 'r', encoding=encoding) as f:
+                content = f.read()
+            logger.info(f"Archivo '{file_path}' leído con éxito usando codificación '{encoding}'.")
+            break 
+        except (UnicodeDecodeError, FileNotFoundError):
+            continue
+    
+    if content is None:
+        logger.error(f"Fallo crítico: No se pudo leer el archivo {file_path} con los códecs probados.")
+        return None
+
+    match = re.search(r"input\s+int\s+MagicNumber\s*=\s*(\d+)\s*;", content, re.IGNORECASE)
+    
+    if match:
+        return int(match.group(1))
+    else:
+        logger.warning(f"No se encontró el patrón 'MagicNumber' en el archivo '{file_path}'.")
+        return None
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
