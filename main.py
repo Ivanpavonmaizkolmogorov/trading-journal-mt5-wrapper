@@ -1,3 +1,6 @@
+print("--- ✅ ESTOY EJECUTANDO LA VERSIÓN MÁS NUEVA DEL CÓDIGO (v_vela_enriquecida) ✅ ---")
+
+# ...el resto de tus imports (import os, import logging, etc.) deben ir debajo de esta línea
 # mt5-wrapper/main.py (Versión 4.0 - Robusta con Dependencias)
 
 import os
@@ -164,13 +167,13 @@ async def list_available_robots():
         raise HTTPException(status_code=500, detail=f"Error al escanear la carpeta de robots: {e}")
 
 # =====================================================================
-#  ✅ NUEVO ENDPOINT PARA ENRIQUECER DATOS DE APERTURA (VERSIÓN FINAL)
+#  ✅ NUEVO ENDPOINT PARA ENRIQUECER DATOS DE APERTURA (VERSIÓN FINAL Y ROBUSTA)
 # =====================================================================
 @app.get("/enriched-position-details/{position_id}", response_model=Dict)
 async def get_enriched_position_details(position_id: int, mt5_conn: mt5 = Depends(get_mt5_connection)):
     """
     Obtiene los detalles completos y enriquecidos de una posición abierta,
-    buscando el deal y la orden de apertura originales.
+    buscando el deal y la orden de apertura originales de forma segura.
     """
     try:
         # 1. Obtener la posición por su ID (ticket)
@@ -179,24 +182,7 @@ async def get_enriched_position_details(position_id: int, mt5_conn: mt5 = Depend
             raise HTTPException(status_code=404, detail=f"Posición con ID {position_id} no encontrada.")
         position_info = positions[0]
 
-        # 2. Buscar en el historial de deals el deal de apertura para esta posición
-        position_deals = mt5_conn.history_deals_get(position=position_id)
-        if not position_deals:
-            # Si no hay deals, es un caso raro, pero nos protegemos.
-            opening_order = None
-        else:
-            # El deal de apertura es el que tiene entry==0
-            opening_deal = next((d for d in position_deals if d.entry == mt5.DEAL_ENTRY_IN), None)
-            if not opening_deal:
-                # Si no se encuentra el deal de entrada, es otro caso raro.
-                opening_order = None
-            else:
-                # Con el deal de entrada, obtenemos el ticket de la orden que lo originó
-                order_ticket = opening_deal.order
-                order_info_tuple = mt5_conn.history_orders_get(ticket=order_ticket)
-                opening_order = order_info_tuple[0] if order_info_tuple and len(order_info_tuple) > 0 else None
-
-        # 3. Construir el diccionario enriquecido
+        # 2. Inicializar los datos con la información básica de la posición
         enriched_data = {
             "ticket": position_info.ticket,
             "time": datetime.fromtimestamp(position_info.time, tz=timezone.utc).isoformat(),
@@ -204,16 +190,82 @@ async def get_enriched_position_details(position_id: int, mt5_conn: mt5 = Depend
             "magic": position_info.magic,
             "volume": position_info.volume,
             "price_open": position_info.price_open,
-            "sl": opening_order.sl if opening_order else position_info.sl,
-            "tp": opening_order.tp if opening_order else position_info.tp,
+            "sl": position_info.sl,
+            "tp": position_info.tp,
             "symbol": position_info.symbol,
-            "comment": opening_order.comment if opening_order else position_info.comment
+            "comment": position_info.comment
         }
+
+        # 3. Intentar enriquecer los datos buscando la orden original
+        position_deals = mt5_conn.history_deals_get(position=position_id)
+        if position_deals and len(position_deals) > 0:
+            # El deal de apertura es el que tiene entry==0 (DEAL_ENTRY_IN)
+            opening_deal = next((d for d in position_deals if d.entry == 0), None)
+            if opening_deal:
+                # Con el deal de entrada, obtenemos el ticket de la orden que lo originó
+                order_ticket = opening_deal.order
+                order_info_tuple = mt5_conn.history_orders_get(ticket=order_ticket)
+                if order_info_tuple and len(order_info_tuple) > 0:
+                    opening_order = order_info_tuple[0]
+                    # Si encontramos la orden, actualizamos los datos con información más precisa
+                    enriched_data["sl"] = opening_order.sl
+                    enriched_data["tp"] = opening_order.tp
+                    enriched_data["comment"] = opening_order.comment
+        
         return enriched_data
 
     except Exception as e:
         logger.error(f"Error crítico enriqueciendo la posición {position_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error interno al procesar los detalles de la posición: {e}")
+
+
+@app.get("/enriched-trade-details/{deal_ticket}", response_model=Dict)
+async def get_enriched_trade_details(deal_ticket: int, mt5_conn: mt5 = Depends(get_mt5_connection)):
+    """
+    Obtiene los detalles completos y enriquecidos de un trade cerrado,
+    buscando el deal de apertura y la orden original.
+    """
+    try:
+        deal_info = mt5_conn.history_deals_get(ticket=deal_ticket)
+        if not deal_info or len(deal_info) == 0:
+            raise HTTPException(status_code=404, detail=f"Deal con ticket {deal_ticket} no encontrado.")
+        
+        closing_deal = deal_info[0]
+        position_id = closing_deal.position_id
+
+        position_deals = mt5_conn.history_deals_get(position=position_id)
+        opening_deal = None
+        opening_order = None
+        if position_deals:
+            opening_deal = next((d for d in position_deals if d.entry == 0), None) # entry=0 es una apertura
+            if opening_deal:
+                order_ticket = opening_deal.order
+                order_info = mt5_conn.history_orders_get(ticket=order_ticket)
+                opening_order = order_info[0] if order_info and len(order_info) > 0 else None
+
+        enriched_data = {
+            "deal_ticket": closing_deal.ticket,
+            "position_id": position_id,
+            "symbol": closing_deal.symbol,
+            "volume": closing_deal.volume,
+            "magic_number": closing_deal.magic,
+            "profit": closing_deal.profit,
+            "commission": closing_deal.commission,
+            "swap": closing_deal.swap,
+            "close_price": closing_deal.price,
+            "close_time_utc": datetime.fromtimestamp(closing_deal.time, tz=timezone.utc).isoformat(),
+            "close_reason": closing_deal.reason,
+            "order_type": opening_deal.type if opening_deal else closing_deal.type,
+            "open_price": opening_deal.price if opening_deal else None,
+            "open_time_utc": datetime.fromtimestamp(opening_deal.time, tz=timezone.utc).isoformat() if opening_deal else None,
+            "stop_loss": opening_order.sl if opening_order else 0.0,
+            "take_profit": opening_order.tp if opening_order else 0.0,
+        }
+        return enriched_data
+
+    except Exception as e:
+        logger.error(f"Error enriqueciendo el deal {deal_ticket}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error interno al procesar los detalles del trade.")
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
